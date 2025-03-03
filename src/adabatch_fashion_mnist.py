@@ -1,4 +1,7 @@
 import torch
+import csv 
+import os
+from datetime import datetime
 import torch.nn as nn
 import torch.optim as optim
 import torchvision
@@ -12,7 +15,59 @@ from model import ResNet14, BasicBlock  # assuming your model is in model.py
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
+
+
+# Helper function to save results to a CSV file
+def save_results_to_csv(static_results, adabatch_results, epochs, folder="results", filename=None):
+    # Generate a default filename with timestamp if none provided
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+        print(f"Created directory: {folder}")
+
+    if filename is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"training_results_{timestamp}.csv"
+
+    # Combine filename and folder
+    filename = os.path.join(folder, filename)
+    
+    with open(filename, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        
+        # Write header
+        writer.writerow(['epoch', 'method', 'batch_size', 'learning_rate', 'train_loss',
+                         'test_accuracy', 'epoch_time'])
+        
+        # Estimate learning rates for static training
+        static_lr = [0.1 * (0.25 ** (epoch // 20)) for epoch in range(epochs)]
+        
+        # Write static results
+        for epoch in range(epochs):
+            writer.writerow([
+                epoch + 1,
+                'static',
+                static_results['batch_sizes'][epoch],
+                static_lr[epoch],
+                static_results['train_losses'][epoch],
+                static_results['test_accuracies'][epoch],
+                static_results['training_times'][epoch]
+            ])
+            
+        # Write AdaBatch results
+        # Note: For AdaBatch, you'll need to track learning rates during training
+        for epoch in range(epochs):
+            writer.writerow([
+                epoch + 1,
+                'adabatch',
+                adabatch_results['batch_sizes'][epoch],
+                adabatch_results.get('learning_rates', [0] * epochs)[epoch],  # Add this to your result dictionary
+                adabatch_results['train_losses'][epoch],
+                adabatch_results['test_accuracies'][epoch],
+                adabatch_results['training_times'][epoch]
+            ])
+    
+    print(f"Results saved to {filename}")
+    return filename
 
 
 # Data loading and preprocessing
@@ -31,11 +86,22 @@ def load_fashion_mnist(batch_size):
 
 
 # Train with static batch size, this is the training function to compare with AdaBatch
+# Note: Momentum=0.9 and weight decay=5e-4 are the default values used in the original AdaBatch paper
+# Learning rate should be 0.1 to match the paper
 def train_static(model, train_loader, test_loader, batch_size, epochs, lr, momentum=0.9, weight_decay=5e-4):
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=weight_decay)
-    # Learning rate scheduler, which decays the learning rate by a factor of 0.2 every 30 epochs
-    scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[30, 60, 90], gamma=0.2)
+    
+    optimizer = optim.SGD(
+        model.parameters(),
+        lr=lr,
+        momentum=momentum,
+        weight_decay=weight_decay)
+    # From section 4.2 of paper: Base learning rate is α = 0.1, and is decay 
+    # by a factor of 0.25 every 20 epochs.
+    scheduler = optim.lr_scheduler.MultiStepLR(
+        optimizer,
+        milestones=[20, 40, 60, 80],
+        gamma=0.25)
 
     train_losses = []
     test_accuracies = []
@@ -104,8 +170,11 @@ def train_static(model, train_loader, test_loader, batch_size, epochs, lr, momen
     }
 
 # Train with AdaBatch
+# Note: Batch_increase_factor=2 and batch_increase_interval=20 are the 
+# default values used in the original AdaBatch paper
+# init_lr (learning rate) should be 0.1 to match the paper.
 def train_adabatch(model, train_dataset, test_dataset, init_batch_size, epochs,
-                   init_lr, batch_increase_interval=10, batch_increase_factor=2,
+                   init_lr, batch_increase_interval=20, batch_increase_factor=2,
                    momentum=0.9, weight_decay=5e-4):
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=init_lr, momentum=momentum, weight_decay=weight_decay)
@@ -114,6 +183,7 @@ def train_adabatch(model, train_dataset, test_dataset, init_batch_size, epochs,
     test_accuracies = []
     batch_sizes = []
     training_times = []
+    learning_rates = []
     
     current_batch_size = init_batch_size
     current_lr = init_lr
@@ -122,17 +192,31 @@ def train_adabatch(model, train_dataset, test_dataset, init_batch_size, epochs,
     test_loader = DataLoader(test_dataset, batch_size=current_batch_size, 
                              shuffle=False, num_workers=2)
     
+    # Add linear warmup schedule for first 5 epochs
+    warmup_epochs = 5
+    if warmup_epochs > 0: 
+        target_lr_after_warmup = init_lr * (init_batch_size / 128) # 128 is baseline batch size
+        # Find step is of warmup
+        warmup_lr_step = (target_lr_after_warmup - init_lr) / warmup_epochs
+        current_lr = init_lr
+
     for epoch in range(epochs):
-        # Check if we need to increase batch size
+        # Apply warmup schedule for first 5 epochs, as per AdaBatch paper
+        if epoch < warmup_epochs:
+            current_lr += warmup_lr_step
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = current_lr 
+            print(f"Epoch {epoch+1}: Warmup LR: {current_lr:.6f}")
+        # check if we need to increase batch size, should happen every batch_increase_interval epochs
         if epoch > 0 and epoch % batch_increase_interval == 0:
             old_batch_size = current_batch_size
             current_batch_size = min(current_batch_size * batch_increase_factor, 8192)  # Cap at a reasonable size
             
             # Scale learning rate to maintain α/r ratio
-            # In AdaBatch, when batch size r increases by factor β, learning rate α is scaled by factor α̃ = α/β
-            current_lr = current_lr * (old_batch_size / current_batch_size)
-            
-            # Update optimizer with new learning rate
+            # In AdaBatch, when batch size r increases by factor β, 
+            # learning rate α is scaled by factor α̃ = α/β
+            current_lr = current_lr * 0.5 # Hardcoded β = 2 for now
+
             for param_group in optimizer.param_groups:
                 param_group['lr'] = current_lr
             
@@ -144,6 +228,7 @@ def train_adabatch(model, train_dataset, test_dataset, init_batch_size, epochs,
                   f"adjusted lr to {current_lr:.6f}")
         
         batch_sizes.append(current_batch_size)
+        learning_rates.append(current_lr)
         
         # Training phase
         model.train()
@@ -234,9 +319,10 @@ def plot_comparison(static_results, adabatch_results, epochs):
 # Main execution
 def main():
     # Setup
-    epochs = 50
+    # Note: These are the default values used in the original AdaBatch paper
+    epochs = 100
     static_batch_size = 128
-    adabatch_init_batch = 64
+    adabatch_init_batch = 128
     learning_rate = 0.1
     
     # Load data
@@ -245,7 +331,7 @@ def main():
     # Static batch size training
     static_model = ResNet14().to(device)
     print("Training with static batch size...")
-    static_results = train_static(static_model, static_train_loader, static_test_loader, 
+    static_results = train_static(static_model, static_train_loader, static_test_loader,
                                 static_batch_size, epochs, learning_rate)
     
     # AdaBatch training
@@ -255,9 +341,18 @@ def main():
                                      adabatch_init_batch, epochs, learning_rate)
     
     # Visualize results
+
     plot_comparison(static_results, adabatch_results, epochs)
-    
+    csv_file = save_results_to_csv(static_results, adabatch_results, epochs)
     # Print overall speedup
+
+    # Save models for future use
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_name_static = f"results/static_model_{timestamp}.pth"
+    file_name_adabatch = f"results/adabatch_model_{timestamp}.pth"
+    torch.save(adabatch_model.state_dict(), file_name_adabatch)
+    torch.save(static_model.state_dict(), file_name_static)
+
     static_total_time = sum(static_results['training_times'])
     adabatch_total_time = sum(adabatch_results['training_times'])
     speedup = static_total_time / adabatch_total_time
@@ -272,4 +367,7 @@ def main():
     print(f"Accuracy difference: {adabatch_results['test_accuracies'][-1] - static_results['test_accuracies'][-1]:.2f}%")
 
 if __name__ == "__main__":
+    print(f"Using device: {device}")
     main()
+    # Note: The paper says that speedups on a single GPU are modest, higher batch sizes up to 4096 are best
+    # sutied for multi-GPU training.
