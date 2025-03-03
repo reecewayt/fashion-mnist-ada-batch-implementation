@@ -6,9 +6,8 @@ Sources:
   - https://www.run.ai/guides/deep-learning-for-computer-vision/pytorch-resnet
   - https://pytorch.org/tutorials/beginner/basics/quickstart_tutorial.html
   - https://github.com/kuangliu/pytorch-cifar/blob/master/models/resnet.py
-
-TODO: tomorrow start with this tutorial and work on understanding beter the ResNet architecture
-https://www.digitalocean.com/community/tutorials/writing-resnet-from-scratch-in-pytorch
+  - https://www.digitalocean.com/community/tutorials/writing-resnet-from-scratch-in-pytorch
+  - https://github.com/JiahongChen/resnet-pytorch
 
 TODO: 
  Add model vizualization
@@ -21,9 +20,13 @@ import torch.nn.functional as F
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
+"""
+BasicBlock: A basic block for the ResNet model
+  - Consists of two convolutional layers with batch normalization
+  - Plus a shortcut connection
+"""
 class BasicBlock(nn.Module):
     expansion = 1
-    ### Define layers of the networks
     def __init__(self, in_channels, out_channels, stride=1):
         super(BasicBlock, self).__init__()
         self.conv1 = nn.Conv2d(
@@ -53,7 +56,9 @@ class ResNet(nn.Module):
         super(ResNet, self).__init__()
         self.in_channels = 16
 
-        # Initial convolution layer
+        # Initial convolution layer, this sets input channels to 1 for grayscale images
+        # The output channels are set to 16 to reduce number of filters in the first layer
+        # The original ResNet paper uses 64 filters in the first layer
         self.conv1 = nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(16)
         
@@ -62,9 +67,11 @@ class ResNet(nn.Module):
         self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
         
+        self.linear = nn.Linear(64, num_classes)  # 10 classes in Fashion MNIST
+
         # Calculate the input size for the linear layer correctly
         # We'll determine this dynamically in the forward pass
-        self.linear = None  # Will be initialized in the first forward pass
+        #self.linear = None  # Will be initialized in the first forward pass
 
     def _make_layer(self, block, out_channels, num_blocks, stride):
         strides = [stride] + [1] * (num_blocks - 1)
@@ -93,14 +100,25 @@ class ResNet(nn.Module):
         out = self.linear(out)
         return out
 
-def ResNet18():
-    # Similar to CIFAR ResNet-20 but adapted for Fashion MNIST (1 channel instead of 3)
-    #return ResNet(BasicBlock, [2, 2, 2, 2])
+
+"""
+ResNet-14 model adapted for Fashion MNIST
+ - 1 input channel (grayscale images)
+ - 10 output classes (clothing items)
+ - 1 initial convolutional layer
+ - 6 basic blocks (each block has 2 convolutional layers + shortcut connection)
+ - 1 linear layer for classification
+ - Total 14 layers
+
+"""
+def ResNet14():
+    # Similar to CIFAR ResNet-20 but adapted for Fashion MNIST
+    # Each layer group has 2 basic blocks, resulting in 14 layers total
     return ResNet(BasicBlock, [2, 2, 2])
 
 # Test the model with a random input
 if __name__ == '__main__':
-    model = ResNet18().to(device)
+    model = ResNet14().to(device)
     print(model)
     
     # Move input tensor to the correct device
