@@ -2,6 +2,10 @@
 torch
 torchvision
 torchaudio
+
+--index-url https://pypi.org/simple
+tensorboard>=2.10.0
+ipython>=7.0.0
 numpy>=1.19.0
 matplotlib>=3.3.0
 tqdm>=4.50.0

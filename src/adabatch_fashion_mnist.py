@@ -1,3 +1,19 @@
+"""
+adabatch_fashion_mnist.py
+This script implements the AdaBatch training method for the Fashion-MNIST dataset using a 
+ResNet architecture. Training is conducted on both static and dynamic batch sizes, and results are 
+saved for postmortem analysis. Note that if you run this on a single GPU, the speedups will be modest.
+
+Author: Reece Wayt
+Date: 3/14/2025
+
+Sources: 
+    - Devarakonda, A., Naumov, M., & Garland, M. (2018, February 14). 
+        Adabatch: Adaptive Batch sizes for training deep neural networks. 
+        arXiv.org. https://arxiv.org/abs/1712.02029 
+
+"""
+
 import torch
 import csv 
 import os
@@ -11,14 +27,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 from torchvision.datasets import FashionMNIST
 from torch.utils.data import DataLoader
-from model import ResNet14, BasicBlock  # assuming your model is in model.py
-
+from model import ResNet14, BasicBlock 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-# Helper function to save results to a CSV file
-def save_results_to_csv(static_results, adabatch_results, epochs, folder="results", filename=None):
+# Helper function to save all results to a CSV file
+def save_results_to_csv_all(small_static_results, large_static_results, adabatch_results, epochs, folder="results", filename=None):
     # Generate a default filename with timestamp if none provided
     if not os.path.exists(folder):
         os.makedirs(folder)
@@ -36,25 +51,36 @@ def save_results_to_csv(static_results, adabatch_results, epochs, folder="result
         
         # Write header
         writer.writerow(['epoch', 'method', 'batch_size', 'learning_rate', 'train_loss',
-                         'test_accuracy', 'epoch_time'])
+                         'test_error', 'epoch_time'])
         
         # Estimate learning rates for static training
         static_lr = [0.1 * (0.25 ** (epoch // 20)) for epoch in range(epochs)]
         
-        # Write static results
+        # Write small static results
         for epoch in range(epochs):
             writer.writerow([
                 epoch + 1,
-                'static',
-                static_results['batch_sizes'][epoch],
+                'small_static',
+                small_static_results['batch_sizes'][epoch],
                 static_lr[epoch],
-                static_results['train_losses'][epoch],
-                static_results['test_accuracies'][epoch],
-                static_results['training_times'][epoch]
+                small_static_results['train_losses'][epoch],
+                small_static_results['test_errors'][epoch],
+                small_static_results['training_times'][epoch]
+            ])
+        
+        # Write large static results
+        for epoch in range(epochs):
+            writer.writerow([
+                epoch + 1,
+                'large_static',
+                large_static_results['batch_sizes'][epoch],
+                static_lr[epoch],
+                large_static_results['train_losses'][epoch],
+                large_static_results['test_errors'][epoch],
+                large_static_results['training_times'][epoch]
             ])
             
         # Write AdaBatch results
-        # Note: For AdaBatch, you'll need to track learning rates during training
         for epoch in range(epochs):
             writer.writerow([
                 epoch + 1,
@@ -62,7 +88,7 @@ def save_results_to_csv(static_results, adabatch_results, epochs, folder="result
                 adabatch_results['batch_sizes'][epoch],
                 adabatch_results.get('learning_rates', [0] * epochs)[epoch],  # Add this to your result dictionary
                 adabatch_results['train_losses'][epoch],
-                adabatch_results['test_accuracies'][epoch],
+                adabatch_results['test_errors'][epoch],
                 adabatch_results['training_times'][epoch]
             ])
     
@@ -104,7 +130,7 @@ def train_static(model, train_loader, test_loader, batch_size, epochs, lr, momen
         gamma=0.25)
 
     train_losses = []
-    test_accuracies = []
+    test_errors = []
     batch_sizes = [batch_size] * epochs
     training_times = []
 
@@ -151,9 +177,10 @@ def train_static(model, train_loader, test_loader, batch_size, epochs, lr, momen
         # Epoch statistics
         train_loss = running_loss / len(train_loader)
         test_accuracy = 100. * correct / total
+        test_error = 100 - test_accuracy
 
         train_losses.append(train_loss)
-        test_accuracies.append(test_accuracy)
+        test_errors.append(test_error)
 
         print(f'Epoch {epoch+1}/{epochs} | Batch Size: {batch_size} | '
               f'Loss: {train_loss:.4f} | Test Acc: {test_accuracy:.2f}% | '
@@ -164,7 +191,7 @@ def train_static(model, train_loader, test_loader, batch_size, epochs, lr, momen
 
     return {
         'train_losses': train_losses,
-        'test_accuracies': test_accuracies,
+        'test_errors': test_errors,
         'batch_sizes': batch_sizes,
         'training_times': training_times
     }
@@ -180,7 +207,7 @@ def train_adabatch(model, train_dataset, test_dataset, init_batch_size, epochs,
     optimizer = optim.SGD(model.parameters(), lr=init_lr, momentum=momentum, weight_decay=weight_decay)
     
     train_losses = []
-    test_accuracies = []
+    test_errors = []
     batch_sizes = []
     training_times = []
     learning_rates = []
@@ -196,9 +223,12 @@ def train_adabatch(model, train_dataset, test_dataset, init_batch_size, epochs,
     warmup_epochs = 5
     if warmup_epochs > 0: 
         target_lr_after_warmup = init_lr * (init_batch_size / 128) # 128 is baseline batch size
-        # Find step is of warmup
+        # Find warmup step size
         warmup_lr_step = (target_lr_after_warmup - init_lr) / warmup_epochs
         current_lr = init_lr
+        print(f"Using warmup schedule for first {warmup_epochs} epochs, "
+              f"target LR after warmup: {target_lr_after_warmup:.6f}, "
+                f"LR step: {warmup_lr_step:.6f}")
 
     for epoch in range(epochs):
         # Apply warmup schedule for first 5 epochs, as per AdaBatch paper
@@ -214,7 +244,7 @@ def train_adabatch(model, train_dataset, test_dataset, init_batch_size, epochs,
             
             # Scale learning rate to maintain α/r ratio
             # In AdaBatch, when batch size r increases by factor β, 
-            # learning rate α is scaled by factor α̃ = α/β
+            # learning rate α is scaled by factor β
             current_lr = current_lr * 0.5 # Hardcoded β = 2 for now
 
             for param_group in optimizer.param_groups:
@@ -263,9 +293,10 @@ def train_adabatch(model, train_dataset, test_dataset, init_batch_size, epochs,
         
         train_loss = running_loss / len(train_loader)
         test_accuracy = 100. * correct / total
+        test_error = 100 - test_accuracy
         
         train_losses.append(train_loss)
-        test_accuracies.append(test_accuracy)
+        test_errors.append(test_error)
         
         print(f'Epoch {epoch+1}/{epochs} | Batch Size: {current_batch_size} | '
               f'LR: {current_lr:.6f} | Loss: {train_loss:.4f} | '
@@ -273,17 +304,18 @@ def train_adabatch(model, train_dataset, test_dataset, init_batch_size, epochs,
     
     return {
         'train_losses': train_losses,
-        'test_accuracies': test_accuracies,
+        'test_errors': test_errors,
         'batch_sizes': batch_sizes,
         'training_times': training_times
     }
 
 # Visualization function
-def plot_comparison(static_results, adabatch_results, epochs):
+def plot_comparison_all(small_static_results, large_static_results, adabatch_results, epochs):
     fig, axs = plt.subplots(2, 2, figsize=(15, 10))
     
     # Plot training loss
-    axs[0, 0].plot(range(1, epochs+1), static_results['train_losses'], label='Static Batch Size')
+    axs[0, 0].plot(range(1, epochs+1), small_static_results['train_losses'], label='Small Static Batch Size')
+    axs[0, 0].plot(range(1, epochs+1), large_static_results['train_losses'], label='Large Static Batch Size')
     axs[0, 0].plot(range(1, epochs+1), adabatch_results['train_losses'], label='AdaBatch')
     axs[0, 0].set_xlabel('Epochs')
     axs[0, 0].set_ylabel('Training Loss')
@@ -291,21 +323,27 @@ def plot_comparison(static_results, adabatch_results, epochs):
     axs[0, 0].legend()
     
     # Plot test accuracy
-    axs[0, 1].plot(range(1, epochs+1), static_results['test_accuracies'], label='Static Batch Size')
-    axs[0, 1].plot(range(1, epochs+1), adabatch_results['test_accuracies'], label='AdaBatch')
+    axs[0, 1].plot(range(1, epochs+1), small_static_results['test_errors'], label='Small Static Batch Size')
+    axs[0, 1].plot(range(1, epochs+1), large_static_results['test_errors'], label='Large Static Batch Size')
+    axs[0, 1].plot(range(1, epochs+1), adabatch_results['test_errors'], label='AdaBatch')
     axs[0, 1].set_xlabel('Epochs')
-    axs[0, 1].set_ylabel('Test Accuracy (%)')
-    axs[0, 1].set_title('Test Accuracy Comparison')
+    axs[0, 1].set_ylabel('Test Errors (%)')
+    axs[0, 1].set_title('Test Errors Comparison')
     axs[0, 1].legend()
     
-    # Plot batch size changes for AdaBatch
-    axs[1, 0].plot(range(1, epochs+1), adabatch_results['batch_sizes'])
+    # Plot batch sizes for all methods
+    axs[1, 0].plot(range(1, epochs+1), small_static_results['batch_sizes'], label='Small Static')
+    axs[1, 0].plot(range(1, epochs+1), large_static_results['batch_sizes'], label='Large Static')
+    axs[1, 0].plot(range(1, epochs+1), adabatch_results['batch_sizes'], label='AdaBatch')
     axs[1, 0].set_xlabel('Epochs')
     axs[1, 0].set_ylabel('Batch Size')
-    axs[1, 0].set_title('AdaBatch - Batch Size Evolution')
+    axs[1, 0].set_title('Batch Size Comparison')
+    axs[1, 0].set_yscale('log')  # Using log scale for better visibility
+    axs[1, 0].legend()
     
     # Plot training time per epoch
-    axs[1, 1].plot(range(1, epochs+1), static_results['training_times'], label='Static Batch Size')
+    axs[1, 1].plot(range(1, epochs+1), small_static_results['training_times'], label='Small Static Batch Size')
+    axs[1, 1].plot(range(1, epochs+1), large_static_results['training_times'], label='Large Static Batch Size')
     axs[1, 1].plot(range(1, epochs+1), adabatch_results['training_times'], label='AdaBatch')
     axs[1, 1].set_xlabel('Epochs')
     axs[1, 1].set_ylabel('Training Time (s)')
@@ -313,26 +351,37 @@ def plot_comparison(static_results, adabatch_results, epochs):
     axs[1, 1].legend()
     
     plt.tight_layout()
-    plt.savefig('adabatch_vs_static.png')
+    plt.savefig('adabatch_vs_all_static.png')
     plt.show()
 
+# Main execution
 # Main execution
 def main():
     # Setup
     # Note: These are the default values used in the original AdaBatch paper
     epochs = 100
-    static_batch_size = 128
+    small_static_batch_size = 128
+    large_static_batch_size = 2048  # Add large batch size for comparison
     adabatch_init_batch = 128
     learning_rate = 0.1
     
-    # Load data
-    train_dataset, test_dataset, static_train_loader, static_test_loader = load_fashion_mnist(static_batch_size)
+    # Load data for small batch size
+    train_dataset, test_dataset, small_static_train_loader, small_static_test_loader = load_fashion_mnist(small_static_batch_size)
     
-    # Static batch size training
-    static_model = ResNet14().to(device)
-    print("Training with static batch size...")
-    static_results = train_static(static_model, static_train_loader, static_test_loader,
-                                static_batch_size, epochs, learning_rate)
+    # Load data for large batch size
+    _, _, large_static_train_loader, large_static_test_loader = load_fashion_mnist(large_static_batch_size)
+    
+    # Small static batch size training
+    small_static_model = ResNet14().to(device)
+    print("Training with small static batch size...")
+    small_static_results = train_static(small_static_model, small_static_train_loader, small_static_test_loader,
+                                       small_static_batch_size, epochs, learning_rate)
+    
+    # Large static batch size training
+    large_static_model = ResNet14().to(device)
+    print("\nTraining with large static batch size...")
+    large_static_results = train_static(large_static_model, large_static_train_loader, large_static_test_loader,
+                                       large_static_batch_size, epochs, learning_rate)
     
     # AdaBatch training
     adabatch_model = ResNet14().to(device)
@@ -341,33 +390,40 @@ def main():
                                      adabatch_init_batch, epochs, learning_rate)
     
     # Visualize results
-
-    plot_comparison(static_results, adabatch_results, epochs)
-    csv_file = save_results_to_csv(static_results, adabatch_results, epochs)
-    # Print overall speedup
-
+    plot_comparison_all(small_static_results, large_static_results, adabatch_results, epochs)
+    csv_file = save_results_to_csv_all(small_static_results, large_static_results, adabatch_results, epochs)
+    
     # Save models for future use
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    file_name_static = f"results/static_model_{timestamp}.pth"
+    file_name_small_static = f"results/small_static_model_{timestamp}.pth"
+    file_name_large_static = f"results/large_static_model_{timestamp}.pth"
     file_name_adabatch = f"results/adabatch_model_{timestamp}.pth"
+    torch.save(small_static_model.state_dict(), file_name_small_static)
+    torch.save(large_static_model.state_dict(), file_name_large_static)
     torch.save(adabatch_model.state_dict(), file_name_adabatch)
-    torch.save(static_model.state_dict(), file_name_static)
 
-    static_total_time = sum(static_results['training_times'])
+    small_static_total_time = sum(small_static_results['training_times'])
+    large_static_total_time = sum(large_static_results['training_times'])
     adabatch_total_time = sum(adabatch_results['training_times'])
-    speedup = static_total_time / adabatch_total_time
     
-    print(f"\nTotal training time (Static): {static_total_time:.2f}s")
+    speedup_vs_small = small_static_total_time / adabatch_total_time
+    speedup_vs_large = large_static_total_time / adabatch_total_time
+    
+    print(f"\nTotal training time (Small Static): {small_static_total_time:.2f}s")
+    print(f"Total training time (Large Static): {large_static_total_time:.2f}s")
     print(f"Total training time (AdaBatch): {adabatch_total_time:.2f}s")
-    print(f"Overall speedup: {speedup:.2f}x")
+    print(f"Speedup vs Small Static: {speedup_vs_small:.2f}x")
+    print(f"Speedup vs Large Static: {speedup_vs_large:.2f}x")
     
     # Print final accuracy
-    print(f"Final test accuracy (Static): {static_results['test_accuracies'][-1]:.2f}%")
-    print(f"Final test accuracy (AdaBatch): {adabatch_results['test_accuracies'][-1]:.2f}%")
-    print(f"Accuracy difference: {adabatch_results['test_accuracies'][-1] - static_results['test_accuracies'][-1]:.2f}%")
+    print(f"\nFinal test error (Small Static): {small_static_results['test_errors'][-1]:.2f}%")
+    print(f"Final test_error (Large Static): {large_static_results['test_errors'][-1]:.2f}%")
+    print(f"Final test error (AdaBatch): {adabatch_results['test_errors'][-1]:.2f}%")
+    print(f"Error Difference (AdaBatch - Small Static): {adabatch_results['test_errors'][-1] - small_static_results['test_errors'][-1]:.2f}%")
+    print(f"Error Difference (AdaBatch - Large Static): {adabatch_results['test_errors'][-1] - large_static_results['test_errors'][-1]:.2f}%")
 
 if __name__ == "__main__":
-    print(f"Using device: {device}")
+    # print(f"Using device: {device}")
     main()
     # Note: The paper says that speedups on a single GPU are modest, higher batch sizes up to 4096 are best
-    # sutied for multi-GPU training.
+    # suited for multi-GPU training.

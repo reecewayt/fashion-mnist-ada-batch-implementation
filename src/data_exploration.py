@@ -1,8 +1,7 @@
 """
 Fashion MNIST dataset exploration which I used to get familiar with the dataset and PyTorch's DataLoader.
 The dataset is downloaded from torchvision.datasets.FashionMNIST and transformed to tensors. This script
-demonstrates how to load the Fashion MNIST dataset, explore its properties, visualize sample images,
-and calculate statistics such as mean and standard deviation for proper normalization.
+demonstrates how to load the Fashion MNIST dataset, explore its properties.
 """
 
 import torch

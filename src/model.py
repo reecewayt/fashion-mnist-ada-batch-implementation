@@ -1,6 +1,7 @@
 """
-This model uses the ResNet-18 architecture but leverages PyTorch's ability to customize the model for the Fashion MNIST dataset.
-The model is trained on the Fashion MNIST dataset, which is a dataset of 28x28 grayscale images of 10 different classes of clothing items.
+This model uses the ResNet architecture but leverages PyTorch's ability to customize the model for the Fashion MNIST dataset.
+The model is trained on the Fashion MNIST dataset, which is a dataset of 28x28 grayscale images of 
+10 different classes of clothing items.
 
 Sources: 
   - https://www.run.ai/guides/deep-learning-for-computer-vision/pytorch-resnet
@@ -8,17 +9,15 @@ Sources:
   - https://github.com/kuangliu/pytorch-cifar/blob/master/models/resnet.py
   - https://www.digitalocean.com/community/tutorials/writing-resnet-from-scratch-in-pytorch
   - https://github.com/JiahongChen/resnet-pytorch
-
-TODO: 
- Add model vizualization
-  - https://pytorch.org/tutorials/intermediate/tensorboard_tutorial.html
+  - Claude.AI as a code assist tool
 """
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
+# print(f"Using device: {device}")
 
 """
 BasicBlock: A basic block for the ResNet model
@@ -69,10 +68,6 @@ class ResNet(nn.Module):
         
         self.linear = nn.Linear(64, num_classes)  # 10 classes in Fashion MNIST
 
-        # Calculate the input size for the linear layer correctly
-        # We'll determine this dynamically in the forward pass
-        #self.linear = None  # Will be initialized in the first forward pass
-
     def _make_layer(self, block, out_channels, num_blocks, stride):
         strides = [stride] + [1] * (num_blocks - 1)
         layers = []
@@ -104,7 +99,7 @@ class ResNet(nn.Module):
 """
 ResNet-14 model adapted for Fashion MNIST
  - 1 input channel (grayscale images)
- - 10 output classes (clothing items)
+ - 10 output classes (clothing categories)
  - 1 initial convolutional layer
  - 6 basic blocks (each block has 2 convolutional layers + shortcut connection)
  - 1 linear layer for classification
@@ -116,7 +111,7 @@ def ResNet14():
     # Each layer group has 2 basic blocks, resulting in 14 layers total
     return ResNet(BasicBlock, [2, 2, 2])
 
-# Test the model with a random input
+# Small test to check that the model is defined properly
 if __name__ == '__main__':
     model = ResNet14().to(device)
     print(model)
